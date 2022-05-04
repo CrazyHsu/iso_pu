@@ -21,6 +21,7 @@ from Bio.SeqUtils import GC
 from collections import Counter
 from scipy import interp
 from sklearn.metrics import roc_curve, auc
+from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings("ignore")
 
@@ -1211,6 +1212,9 @@ class SchemeModelEval(object):
         elif self.model == "RF":
             from sklearn.ensemble import RandomForestClassifier
             return RandomForestClassifier
+        elif self.model == "DT":
+            from sklearn.tree import DecisionTreeClassifier
+            return DecisionTreeClassifier
         elif self.model == "GB":
             from sklearn.ensemble import GradientBoostingClassifier
             return GradientBoostingClassifier
@@ -1799,7 +1803,8 @@ def testModels():
     # validPosIndex = np.random.choice(posIsoData.index, replace=False, size=len(validNegIndex))
 
     kf = KFold(n_splits=5, random_state=42, shuffle=True)
-    # for model in ["RF", "GB", "SVM", "NB"]:
+    # for model in ["RF", "DT", "GB", "SVM", "NB", "GB", "XGB", "LGB", "ERT", "ANN"]:
+    # for model in ["DT", "GB", "SVM", "NB"]:
     for model in ["RF"]:
         fig1 = plt.figure(figsize=[12, 12])
         ax1 = fig1.add_subplot(111, aspect='equal')
@@ -1837,7 +1842,7 @@ def testModels():
             trainingData.replace({False: 0, True: 1}, inplace=True)
             testData.replace({False: 0, True: 1}, inplace=True)
 
-            sme = SchemeModelEval(trainingData=trainingData, model="RF", scheme="bagging")
+            sme = SchemeModelEval(trainingData=trainingData, model=model, scheme="bagging")
             sme.eval()
             prediction = sme.finalEstimator.predict_proba(testData.iloc[:, :-1])
             pu_score = pd.DataFrame({"pu_score": prediction[:, 1]}, index=testData.index)
@@ -1868,21 +1873,153 @@ def testModels():
         plt.savefig('PU.{}_{}.CV_ROC.pdf'.format(model, "bagging"))
 
 
-    # testNegData = featureData.loc[validNegIndex, :]
-    # testNegData["label"] = -1
-    # testPosData = featureData.loc[validPosIndex, :]
-    # testPosData["label"] = +1
-    # testData = pd.concat([testPosData, testNegData])
-    # testData = testData.loc[:, usedFeatures]
-    #
-    # ########### construct training dataframe
-    # trainingPosData = posIsoData.loc[list(set(posIsoData.index) - set(validPosIndex)), ]
-    # trainingUnlabelData = novelIsoData
-    # trainingData = pd.concat([trainingPosData, trainingUnlabelData])
-    # trainingData["label"] = 1
-    # trainingData.loc[trainingData.annotation == "novel", "label"] = 0
-    # trainingData = trainingData.loc[:, usedFeatures]
-    #
-    # trainingData = trainingData.sample(frac=1)
-    # testData = testData.sample(frac=1)
-testModels()
+def testModels2():
+    from sklearn.model_selection import KFold
+    featureData = pd.read_csv("isoFeatures.txt", sep="\t", index_col=0)
+
+    usedFeatures = ["isoLength", "flCount", "ratioIsoToGene", "exonNum", "GC", "orfLength", "orfIntegrity",
+                    "pepLength", "FickettScore", "pI", "codingP", "canJuncRatio", "sdJuncCov", "minJuncRPKM",
+                    "nIndelsAroundJunc", "ratioMinJuncCovToAllCov", "nJuncsWithIndels", "indelNearJunc", "label"]
+
+    annoIsoData = featureData.loc[featureData.annotation == "annotated", ]
+    novelIsoData = featureData.loc[featureData.annotation == "novel", ]
+
+
+    ########### construct test dataframe
+    # topN = int(len(novelIsoData) * 0.1)
+    # leastNonCodingIsos = novelIsoData.loc[novelIsoData.codingLabel == "noncoding", ].sort_values(by=["codingP"]).head(topN)
+    leastExpIsos = novelIsoData.loc[(novelIsoData.ratioIsoToGene < 0.05), ]
+    unreliableJuncIsos = novelIsoData.loc[(novelIsoData.withNovelJunc == True) &
+                                          (novelIsoData.minNovelJuncRPKM < 0.05), ]
+    validNegIndex = list(set(leastExpIsos.index) | set(unreliableJuncIsos.index))
+
+    posIsoData = annoIsoData.loc[(annoIsoData.flCount >= 4) & (annoIsoData.minJuncRPKM >= 0.1), ]
+    posIsoDataInner, posIsoDataOuter = train_test_split(posIsoData, test_size=0.2)
+    validNegIndexInner, validNegOuter = train_test_split(novelIsoData.loc[validNegIndex, ], test_size=0.2)
+
+    outerPosData = posIsoDataInner.copy()
+    posIsoDataOuterCopy = posIsoDataOuter.copy()
+    validNegOuterCopy = validNegOuter.copy()
+    posIsoDataOuterCopy["label"] = 1
+    validNegOuterCopy["label"] = 0
+
+    outerUnlabeledData = pd.concat([posIsoDataOuter, validNegOuter])
+    outerPosData["label"] = 1
+    outerUnlabeledData["label"] = 0
+
+    outerPosData = outerPosData.loc[:, usedFeatures]
+    outerPosData = outerPosData.sample(frac=1)
+    outerUnlabeledData = outerUnlabeledData.loc[:, usedFeatures]
+    outerUnlabeledData = outerUnlabeledData.sample(frac=1)
+
+    outerPosData.replace({False: 0, True: 1}, inplace=True)
+    outerUnlabeledData.replace({False: 0, True: 1}, inplace=True)
+    outerTrainingData = pd.concat([outerPosData, outerUnlabeledData])
+
+    kf = KFold(n_splits=5, random_state=42, shuffle=True)
+    # for model in ["RF", "DT", "GB", "SVM", "NB", "XGB", "LGB", "ERT", "ANN"]:
+    for model in ["RF", "DT", "GB", "SVM", "NB"]:
+    # for model in ["XGB", "LGB", "ERT", "ANN"]:
+    # for model in ["RF"]:
+        for scheme in ["bagging"]:
+            fig1 = plt.figure(figsize=[12, 12])
+            ax1 = fig1.add_subplot(111, aspect='equal')
+            ax1.add_patch(
+                patches.Arrow(0.45, 0.5, -0.25, 0.25, width=0.3, color='green', alpha=0.5)
+            )
+            ax1.add_patch(
+                patches.Arrow(0.5, 0.45, 0.25, -0.25, width=0.3, color='red', alpha=0.5)
+            )
+
+            tprs = []
+            aucs = []
+            mean_fpr = np.linspace(0, 1, 100)
+            i = 1
+            for train_i, test_i in kf.split(posIsoDataInner):
+                train_index = posIsoDataInner.index[train_i]
+                test_index = posIsoDataInner.index[test_i]
+                posIsoDataTraining = posIsoDataInner.loc[train_index, ]
+                posIsoDataTest = posIsoDataInner.loc[test_index, ]
+                negIsoDataTest = novelIsoData.loc[validNegIndexInner.index, ]
+
+                posIsoDataTraining["label"] = 1
+                posIsoDataTest["label"] = 0
+                negIsoDataTest["label"] = 0
+
+                trainingData = pd.concat([posIsoDataTraining, posIsoDataTest, negIsoDataTest])
+                trainingData = trainingData.loc[:, usedFeatures]
+                trainingData = trainingData.sample(frac=1)
+
+                posIsoDataTest["label"] = 1
+                testData = pd.concat([posIsoDataTest, negIsoDataTest])
+                testData = testData.loc[:, usedFeatures]
+                testData = testData.sample(frac=1)
+
+                trainingData.replace({False: 0, True: 1}, inplace=True)
+                testData.replace({False: 0, True: 1}, inplace=True)
+
+                sme = SchemeModelEval(trainingData=trainingData, model=model, scheme=scheme)
+                sme.eval()
+                prediction = sme.finalEstimator.predict_proba(testData.iloc[:, :-1])
+                pu_score = pd.DataFrame({"pu_score": prediction[:, 1]}, index=testData.index)
+                results = pd.DataFrame({
+                    "true_label": testData.label,
+                    "train_label": trainingData.loc[trainingData.label == 0, ].label,
+                    "pu_score": pu_score.pu_score
+                }, columns=["true_label", "train_label", "pu_score"])
+
+                fpr, tpr, t = roc_curve(testData.iloc[:, -1], prediction[:, 1])
+                tprs.append(interp(mean_fpr, fpr, tpr))
+                roc_auc = auc(fpr, tpr)
+                aucs.append(roc_auc)
+                plt.plot(fpr, tpr, lw=2, alpha=0.3, label='ROC fold %d (AUC = %0.2f)' % (i, roc_auc))
+                i = i + 1
+
+            plt.plot([0, 1], [0, 1], linestyle='--', lw=2, color='black')
+            mean_tpr = np.mean(tprs, axis=0)
+            mean_auc = auc(mean_fpr, mean_tpr)
+            plt.plot(mean_fpr, mean_tpr, color='blue', label=r'Mean ROC (AUC = %0.2f )' % (mean_auc), lw=2, alpha=1)
+
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('ROC')
+            plt.legend(loc="lower right")
+            plt.text(0.32, 0.7, 'More accurate area', fontsize=12)
+            plt.text(0.63, 0.4, 'Less accurate area', fontsize=12)
+            plt.savefig('PU.{}_{}.inner.CV_ROC.pdf'.format(model, scheme))
+            plt.close()
+
+            ######################
+            fig1 = plt.figure(figsize=[12, 12])
+            ax1 = fig1.add_subplot(111, aspect='equal')
+            ax1.add_patch(
+                patches.Arrow(0.45, 0.5, -0.25, 0.25, width=0.3, color='green', alpha=0.5)
+            )
+            ax1.add_patch(
+                patches.Arrow(0.5, 0.45, 0.25, -0.25, width=0.3, color='red', alpha=0.5)
+            )
+
+            sme = SchemeModelEval(trainingData=outerTrainingData, model=model, scheme=scheme)
+            sme.eval()
+            prediction = sme.finalEstimator.predict_proba(outerTrainingData.iloc[:, :-1])
+            pu_score = pd.DataFrame({"pu_score": prediction[:, 1]}, index=outerTrainingData.index)
+            results = pd.DataFrame({
+                "true_label": pd.concat([outerPosData, posIsoDataOuterCopy, validNegOuterCopy]).label,
+                "train_label": outerTrainingData.label,
+                "pu_score": pu_score.pu_score
+            }, columns=["true_label", "train_label", "pu_score"])
+
+            fpr, tpr, t = roc_curve(outerTrainingData.iloc[:, -1], prediction[:, 1])
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, lw=2, alpha=0.3, label='ROC outer data (AUC = %0.2f )' % (roc_auc))
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('ROC')
+            plt.legend(loc="lower right")
+            plt.text(0.32, 0.7, 'More accurate area', fontsize=12)
+            plt.text(0.63, 0.4, 'Less accurate area', fontsize=12)
+            plt.savefig('PU.{}_{}.outer.CV_ROC.pdf'.format(model, scheme))
+            plt.close()
+
+# testModels()
+testModels2()
