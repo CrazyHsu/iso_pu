@@ -1123,8 +1123,8 @@ class SchemeModelEval(object):
 
             # from baggingPU import BaggingClassifierPU
             cf = BaggingClassifierPU(
-                classifier(),
-                n_estimators=1000,
+                classifier,
+                n_estimators=100,
                 max_samples=max_samples,
                 n_jobs=-1
             )
@@ -1141,7 +1141,7 @@ class SchemeModelEval(object):
             y = y_train
             y = pd.Series(y)
 
-            cf = classifier(n_estimators=1000, n_jobs=-1)
+            cf = classifier
             cf.fit(X, y)
 
             ys = 2*y -1
@@ -1159,7 +1159,7 @@ class SchemeModelEval(object):
             ys.loc[iN_new] = 0
 
             # Classifier to be used for step 2
-            cf2 = classifier(n_estimators=1000, n_jobs=-1)
+            cf2 = classifier
 
             # Limit to 10 iterations (this is arbitrary, but
             # otherwise this approach can take a very long time)
@@ -1193,7 +1193,7 @@ class SchemeModelEval(object):
             y = y_train
             y = pd.Series(y)
 
-            cf = classifier(n_estimators=1000, n_jobs=-1)
+            cf = classifier
             cf.fit(X, y)
 
             self.predResults = pd.DataFrame({
@@ -1208,31 +1208,19 @@ class SchemeModelEval(object):
     def getClassifier(self):
         if self.model == "SVM":
             from sklearn.svm import SVC
-            return SVC
-        elif self.model == "RF":
-            from sklearn.ensemble import RandomForestClassifier
-            return RandomForestClassifier
+            return SVC(kernel='rbf', gamma='auto', random_state=0)
         elif self.model == "DT":
             from sklearn.tree import DecisionTreeClassifier
-            return DecisionTreeClassifier
+            return DecisionTreeClassifier()
+        elif self.model == "RF":
+            from sklearn.ensemble import RandomForestClassifier
+            return RandomForestClassifier(n_estimators=10, random_state=0)
         elif self.model == "GB":
             from sklearn.ensemble import GradientBoostingClassifier
-            return GradientBoostingClassifier
-        elif self.model == "XGB":
-            from xgboost import XGBClassifier
-            return XGBClassifier
-        elif self.model == "LGB":
-            from lightgbm import LGBMClassifier
-            return LGBMClassifier
-        elif self.model == "ERT":
-            from sklearn.ensemble import ExtraTreesClassifier
-            return ExtraTreesClassifier
-        elif self.model == "ANN":
-            from sklearn.neural_network import MLPClassifier
-            return MLPClassifier
+            return GradientBoostingClassifier(n_estimators=10, random_state=0)
         elif self.model == "NB":
             from sklearn.naive_bayes import GaussianNB
-            return GaussianNB
+            return GaussianNB()
 
     def estimatorTest(self, testData=None):
         X_test = testData.iloc[:, :-1]
@@ -2021,5 +2009,132 @@ def testModels2():
             plt.savefig('PU.{}_{}.outer.CV_ROC.pdf'.format(model, scheme))
             plt.close()
 
+
+def testModels3():
+    from sklearn.model_selection import KFold
+    featureData = pd.read_csv("isoFeatures.txt", sep="\t", index_col=0)
+
+    usedFeatures = ["isoLength", "flCount", "ratioIsoToGene", "exonNum", "GC", "orfLength", "orfIntegrity",
+                    "pepLength", "FickettScore", "pI", "codingP", "canJuncRatio", "sdJuncCov", "minJuncRPKM",
+                    "nIndelsAroundJunc", "ratioMinJuncCovToAllCov", "nJuncsWithIndels", "indelNearJunc", "label"]
+
+    annoIsoData = featureData.loc[featureData.annotation == "annotated",]
+    novelIsoData = featureData.loc[featureData.annotation == "novel",]
+
+    ########### construct test dataframe
+    # topN = int(len(novelIsoData) * 0.1)
+    # leastNonCodingIsos = novelIsoData.loc[novelIsoData.codingLabel == "noncoding", ].sort_values(by=["codingP"]).head(topN)
+    leastExpIsos = novelIsoData.loc[(novelIsoData.ratioIsoToGene < 0.05),]
+    unreliableJuncIsos = novelIsoData.loc[(novelIsoData.withNovelJunc == True) &
+                                          (novelIsoData.minNovelJuncRPKM < 0.05),]
+    validNegIndex = list(set(leastExpIsos.index) | set(unreliableJuncIsos.index))
+
+    posIsoData = annoIsoData.loc[(annoIsoData.flCount >= 2) & (annoIsoData.minJuncRPKM >= 0.05),]
+    posIsoDataInner, posIsoDataOuter = train_test_split(posIsoData, test_size=0.2, random_state=0)
+    validNegIndexInner, validNegOuter = train_test_split(novelIsoData.loc[validNegIndex,], test_size=0.2,
+                                                         random_state=0)
+
+    outerPosData = posIsoDataInner.copy()
+    outerPosData["label"] = 1
+    posIsoDataOuterCopy = posIsoDataOuter.copy()
+    posIsoDataOuterCopy["label"] = 1
+    validNegOuterCopy = validNegOuter.copy()
+    validNegOuterCopy["label"] = 0
+
+    outerUnlabeledData = pd.concat([posIsoDataOuterCopy, validNegOuterCopy])
+    outerUnlabeledData["label"] = 0
+
+    outerPosData = outerPosData.loc[:, usedFeatures]
+    outerPosData = outerPosData.sample(frac=1)
+    outerUnlabeledData = outerUnlabeledData.loc[:, usedFeatures]
+    outerUnlabeledData = outerUnlabeledData.sample(frac=1)
+
+    outerPosData.replace({False: 0, True: 1}, inplace=True)
+    outerUnlabeledData.replace({False: 0, True: 1}, inplace=True)
+    outerTrainingData = pd.concat([outerPosData, outerUnlabeledData])
+
+    kf = KFold(n_splits=5, random_state=42, shuffle=True)
+    colors = ["#1f497d", "#f79646", "#9bbb59", "#7f7f7f", "#8064a2"]
+    models = ["RF", "GB", "DT", "SVM", "NB"]
+    names = ["RF", "GB", "DT", "SVM", "NB"]
+
+    for scheme in ["bagging"]:
+        fig1 = plt.figure(figsize=[6, 6])
+        ax1 = fig1.add_subplot(111, aspect='equal')
+        for model, color, name in zip(models, colors, names):
+            tprs = []
+            aucs = []
+            mean_fpr = np.linspace(0, 1, 100)
+            i = 1
+            for train_i, test_i in kf.split(posIsoDataInner):
+                train_index = posIsoDataInner.index[train_i]
+                test_index = posIsoDataInner.index[test_i]
+                posIsoDataTraining = posIsoDataInner.loc[train_index,]
+                posIsoDataTest = posIsoDataInner.loc[test_index,]
+                negIsoDataTest = novelIsoData.loc[validNegIndexInner.index,]
+
+                posIsoDataTraining["label"] = 1
+                posIsoDataTest["label"] = 0
+                negIsoDataTest["label"] = 0
+
+                trainingData = pd.concat([posIsoDataTraining, posIsoDataTest, negIsoDataTest])
+                trainingData = trainingData.loc[:, usedFeatures]
+                trainingData = trainingData.sample(frac=1)
+
+                posIsoDataTest["label"] = 1
+                testData = pd.concat([posIsoDataTest, negIsoDataTest])
+                testData = testData.loc[:, usedFeatures]
+                testData = testData.sample(frac=1)
+
+                trainingData.replace({False: 0, True: 1}, inplace=True)
+                testData.replace({False: 0, True: 1}, inplace=True)
+
+                sme = SchemeModelEval(trainingData=trainingData, model=model, scheme=scheme)
+                sme.eval()
+                prediction = sme.finalEstimator.predict_proba(testData.iloc[:, :-1])
+                pu_score = pd.DataFrame({"pu_score": prediction[:, 1]}, index=testData.index)
+                results = pd.DataFrame({
+                    "true_label": testData.label,
+                    "train_label": trainingData.loc[trainingData.label == 0,].label,
+                    "pu_score": pu_score.pu_score
+                }, columns=["true_label", "train_label", "pu_score"])
+
+                fpr, tpr, t = roc_curve(results.true_label, results.pu_score)
+                tprs.append(interp(mean_fpr, fpr, tpr))
+                roc_auc = auc(fpr, tpr)
+                aucs.append(roc_auc)
+                i = i + 1
+
+            mean_tpr = np.mean(tprs, axis=0)
+            mean_auc = auc(mean_fpr, mean_tpr)
+            plt.plot(mean_fpr, mean_tpr, lw=2, linestyle='--', color=color, label='%s (CV AUC = %0.3f )' % (name, mean_auc))
+
+        ######################
+
+        for model, color, name in zip(models, colors, names):
+            sme = SchemeModelEval(trainingData=outerTrainingData, model=model, scheme=scheme)
+            sme.eval()
+            prediction = sme.finalEstimator.predict_proba(outerUnlabeledData.iloc[:, :-1])
+            pu_score = pd.DataFrame({"pu_score": prediction[:, 1]}, index=outerUnlabeledData.index)
+            results = pd.DataFrame({
+                "true_label": pd.concat([posIsoDataOuterCopy, validNegOuterCopy]).label,
+                "train_label": outerUnlabeledData.label,
+                "pu_score": pu_score.pu_score
+            }, columns=["true_label", "train_label", "pu_score"])
+
+            fpr, tpr, t = roc_curve(results.true_label, results.pu_score)
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, lw=2, color=color, label='%s (Test AUC = %0.3f )' % (name, roc_auc))
+
+        # plt.plot([0, 1], [0, 1], linestyle='--', lw=2, color='grey')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('ROC_AUC')
+        plt.legend(loc="lower right")
+
+        plt.savefig('PU.{}.ROC_AUC.pdf'.format(scheme))
+        plt.close()
+
 # testModels()
-testModels2()
+# testModels2()
+testModels3()
